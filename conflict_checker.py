@@ -7,7 +7,7 @@ import time
 import requests
 
 GITHUB_API = "https://api.github.com"
-MIN_POLL_INTERVAL = 60  # GitHub Events API の推奨最小ポーリング間隔
+MIN_POLL_INTERVAL = 10
 
 
 def load_config():
@@ -39,7 +39,6 @@ def load_config():
 
 
 def fetch_events(owner, repo, token, etag=None):
-    """イベント一覧を取得。304 の場合は空リストを返す。"""
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -63,7 +62,6 @@ def fetch_events(owner, repo, token, etag=None):
 
 
 def has_merge_event(events, last_event_id):
-    """last_event_id より新しいイベントにマージが含まれるか確認する。"""
     for event in events:
         try:
             event_id = int(event["id"])
@@ -71,7 +69,7 @@ def has_merge_event(events, last_event_id):
             continue
 
         if event_id <= last_event_id:
-            break  # newest-first なのでここで打ち切り
+            break
 
         if event["type"] == "PullRequestEvent":
             payload = event.get("payload", {})
@@ -134,10 +132,9 @@ def get_pr_mergeable(owner, repo, number, token):
 
 
 def send_notification(title, message, pr_url=None):
-    # 1. 音（許可不要・確実）
+    # 音（許可不要・確実）
     subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], check=False)
-
-    # 2. コンフリクトしたPRをブラウザで開く（許可不要・最も視覚的）
+    # コンフリクトしたPRをブラウザで開く（許可不要・最も視覚的）
     if pr_url:
         subprocess.run(["open", pr_url], check=False)
 
@@ -147,11 +144,12 @@ def run_check(owner, repo, token, notified_conflicts):
         prs = fetch_open_prs(owner, repo, token)
     except requests.RequestException as e:
         print(f"[警告] PR一覧の取得に失敗しました: {e}")
-        return
+        return False
 
     open_pr_numbers = {pr["number"] for pr in prs}
     notified_conflicts &= open_pr_numbers  # クローズされたPRを削除
 
+    has_pending = False
     for pr in prs:
         number = pr["number"]
         title = pr["title"]
@@ -162,7 +160,11 @@ def run_check(owner, repo, token, notified_conflicts):
             print(f"[警告] PR #{number} の取得に失敗しました: {e}")
             continue
 
-        if mergeable is False:
+        if mergeable is None:
+            # GitHub がまだ計算中 → 呼び出し元でリトライさせる
+            print(f"[計算中] PR #{number} の mergeable を GitHub が計算中です。再チェックします")
+            has_pending = True
+        elif mergeable is False:
             if number not in notified_conflicts:
                 msg = f"PR #{number}「{title}」にコンフリクトが発生しました"
                 print(f"[コンフリクト検知] {msg}")
@@ -174,7 +176,8 @@ def run_check(owner, repo, token, notified_conflicts):
                 print(f"[解消] {msg}")
                 send_notification(f"ConflictConfirmer: {owner}/{repo}", msg)
                 notified_conflicts.discard(number)
-        # mergeable が None はGitHub計算中なのでスキップ
+
+    return has_pending
 
 
 def main():
@@ -195,11 +198,9 @@ def main():
     print(f"ConflictConfirmer 起動: {owner}/{repo}")
     print(f"イベントポーリング間隔: {poll_interval}秒")
 
-    # 初回: 現在のコンフリクト状態を確認
     print(f"[初回チェック] {time.strftime('%Y-%m-%d %H:%M:%S')}")
     run_check(owner, repo, token, notified_conflicts)
 
-    # 初回イベントIDを記録（以降の差分検知に使用）
     try:
         etag, events = fetch_events(owner, repo, token)
         last_event_id = get_latest_event_id(events)
@@ -217,7 +218,13 @@ def main():
 
         if events and has_merge_event(events, last_event_id):
             print(f"[マージ検知] {time.strftime('%Y-%m-%d %H:%M:%S')} コンフリクトチェックを開始します")
-            run_check(owner, repo, token, notified_conflicts)
+            pending = run_check(owner, repo, token, notified_conflicts)
+            # mergeable が null のPRがある場合、計算完了まで5秒ごとに最大30秒リトライ
+            retries = 0
+            while pending and retries < 6:
+                time.sleep(5)
+                retries += 1
+                pending = run_check(owner, repo, token, notified_conflicts)
 
         if events:
             last_event_id = get_latest_event_id(events)
