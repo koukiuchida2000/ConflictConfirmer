@@ -134,10 +134,19 @@ def get_pr_mergeable(owner, repo, number, token):
 
 
 def send_notification(title, message):
-    safe_title = title.replace('"', '\\"')
-    safe_message = message.replace('"', '\\"')
-    script = f'display notification "{safe_message}" with title "{safe_title}"'
-    subprocess.run(["osascript", "-e", script], check=False)
+    # terminal-notifier を優先使用（より確実に通知が届く）
+    notifier = subprocess.run(["which", "terminal-notifier"], capture_output=True, text=True).stdout.strip()
+    if notifier:
+        subprocess.run(
+            [notifier, "-title", title, "-message", message, "-sound", "default"],
+            check=False,
+        )
+    else:
+        # フォールバック: osascript（System Settings → 通知 → Script Editor の許可が必要）
+        safe_title = title.replace('"', '\\"')
+        safe_message = message.replace('"', '\\"')
+        script = f'display notification "{safe_message}" with title "{safe_title}"'
+        subprocess.run(["osascript", "-e", script], check=False)
 
 
 def run_check(owner, repo, token, notified_conflicts):
