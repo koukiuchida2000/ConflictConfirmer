@@ -133,20 +133,13 @@ def get_pr_mergeable(owner, repo, number, token):
     return resp.json().get("mergeable")  # True / False / None
 
 
-def send_notification(title, message):
-    # terminal-notifier を優先使用（より確実に通知が届く）
-    notifier = subprocess.run(["which", "terminal-notifier"], capture_output=True, text=True).stdout.strip()
-    if notifier:
-        subprocess.run(
-            [notifier, "-title", title, "-message", message, "-sound", "default"],
-            check=False,
-        )
-    else:
-        # フォールバック: osascript（System Settings → 通知 → Script Editor の許可が必要）
-        safe_title = title.replace('"', '\\"')
-        safe_message = message.replace('"', '\\"')
-        script = f'display notification "{safe_message}" with title "{safe_title}"'
-        subprocess.run(["osascript", "-e", script], check=False)
+def send_notification(title, message, pr_url=None):
+    # 1. 音（許可不要・確実）
+    subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], check=False)
+
+    # 2. コンフリクトしたPRをブラウザで開く（許可不要・最も視覚的）
+    if pr_url:
+        subprocess.run(["open", pr_url], check=False)
 
 
 def run_check(owner, repo, token, notified_conflicts):
@@ -162,6 +155,7 @@ def run_check(owner, repo, token, notified_conflicts):
     for pr in prs:
         number = pr["number"]
         title = pr["title"]
+        pr_url = pr.get("html_url", f"https://github.com/{owner}/{repo}/pull/{number}")
         try:
             mergeable = get_pr_mergeable(owner, repo, number, token)
         except requests.RequestException as e:
@@ -172,7 +166,7 @@ def run_check(owner, repo, token, notified_conflicts):
             if number not in notified_conflicts:
                 msg = f"PR #{number}「{title}」にコンフリクトが発生しました"
                 print(f"[コンフリクト検知] {msg}")
-                send_notification(f"ConflictConfirmer: {owner}/{repo}", msg)
+                send_notification(f"ConflictConfirmer: {owner}/{repo}", msg, pr_url)
                 notified_conflicts.add(number)
         elif mergeable is True:
             if number in notified_conflicts:
